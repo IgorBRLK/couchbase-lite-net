@@ -23,16 +23,15 @@ using System.Collections;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Diagnostics.CodeAnalysis;
-using System.Threading.Tasks;
 using Couchbase.Lite.Logging;
 using Couchbase.Lite.Serialization;
 using LiteCore;
 using LiteCore.Interop;
 using LiteCore.Util;
 
-namespace Couchbase.Lite.DB
+namespace Couchbase.Lite
 {
-    internal sealed unsafe class Document : PropertyContainer, IDocument
+    public sealed unsafe class Document : PropertyContainer, IDisposable
     {
         #region Constants
 
@@ -46,7 +45,11 @@ namespace Couchbase.Lite.DB
         private readonly Database _database;
         public event EventHandler Changed;
 
+        /// <summary>
+        /// An event that is fired when the document is saved
+        /// </summary>
         public event EventHandler<DocumentSavedEventArgs> Saved;
+
         private C4Document* _c4Doc;
         private IConflictResolver _conflictResolver;
 
@@ -54,46 +57,49 @@ namespace Couchbase.Lite.DB
 
         #region Properties
 
+        /// <summary>
+        /// Gets or sets the <see cref="IConflictResolver"/> that should resolve conflicts for this document
+        /// </summary>
         public IConflictResolver ConflictResolver
         {
-            get {
-                AssertSafety();
-                return _conflictResolver;
-            }
-            set {
-                AssertSafety();
-                _conflictResolver = value;
-            }
+            get => _threadSafety.DoLocked(() => _conflictResolver);
+            set => _threadSafety.DoLocked(() => _conflictResolver = value);
         }
 
-        public IDatabase Database => _database;
+        /// <summary>
+        /// Gets the <see cref="Database"/> that owns this document
+        /// </summary>
+        public Database Database => _database;
 
-        public bool Exists
-        {
-            get {
-                AssertSafety();
-                return _c4Doc->flags.HasFlag(C4DocumentFlags.Exists);
-            }
-        }
+        /// <summary>
+        /// Gets whether or not this document exists (i.e. has been persisted)
+        /// </summary>
+        public bool Exists => _threadSafety.DoLocked(() => _c4Doc->flags.HasFlag(C4DocumentFlags.Exists));
 
+        /// <summary>
+        /// Gets the unique ID of this document
+        /// </summary>
         public string Id { get; }
 
-        public bool IsDeleted
-        {
-            get {
-                AssertSafety();
-                return _c4Doc->flags.HasFlag(C4DocumentFlags.Deleted);
-            }
-        }
+        /// <summary>
+        /// Gets whether or not this document is deleted
+        /// </summary>
+        public bool IsDeleted => _threadSafety.DoLocked(() => _c4Doc->flags.HasFlag(C4DocumentFlags.Deleted));
 
+        /// <summary>
+        /// Gets the sequence number of this document
+        /// </summary>
         public ulong Sequence => _c4Doc->sequence;
 
         internal override bool HasChanges
         {
             get => base.HasChanges;
             set {
-                base.HasChanges = value;
-                _database.SetHasUnsavedChanges(this, value);
+                _threadSafety.DoLocked(() =>
+                {
+                    base.HasChanges = value;
+                    _database.SetHasUnsavedChanges(this, value);
+                });
             }
         }
 
@@ -130,6 +136,62 @@ namespace Couchbase.Lite.DB
 
         #endregion
 
+        #region Public Methods
+
+        /// <summary>
+        /// Deletes the document
+        /// </summary>
+        public void Delete()
+        {
+            _threadSafety.DoLocked(() => Save(EffectiveConflictResolver, true));
+        }
+
+        /// <summary>
+        /// Purges the document, which leaves no trace behind for replication
+        /// </summary>
+        /// <returns>Whether or not the purge succeeded</returns>
+        public bool Purge()
+        {
+            if(!Exists) {
+                return false;
+            }
+
+            return _threadSafety.DoLocked(() =>
+            {
+                Database.InBatch(() =>
+                {
+                    LiteCoreBridge.Check(err => NativeRaw.c4doc_purgeRevision(_c4Doc, C4Slice.Null, err));
+                    LiteCoreBridge.Check(err => Native.c4doc_save(_c4Doc, 0, err));
+                });
+
+                LoadDoc(false);
+                ResetChangesKeys();
+                return true;
+            });
+        }
+
+        /// <summary>
+        /// Saves the document to disk
+        /// </summary>
+        public void Save()
+        {
+            _threadSafety.DoLocked(() => Save(EffectiveConflictResolver, false));
+        }
+
+        /// <summary>
+        /// Sets the given key to the given value in this document
+        /// </summary>
+        /// <param name="key">The key to set</param>
+        /// <param name="value">The value to set</param>
+        /// <returns>The same <see cref="IDocument"/> object for chaining</returns>
+        public new Document Set(string key, object value)
+        {
+            base.Set(key, value);
+            return this;
+        }
+
+        #endregion
+
         #region Internal Methods
 
         internal void ChangedExternally()
@@ -137,13 +199,15 @@ namespace Couchbase.Lite.DB
             // The current API design decision is that when a document has unsaved changes, it should
             // not update with external changes and should not post notifications.  Instead the conflict
             // resolution will happen when the app saves the document
-            AssertSafety();
             if(!HasChanges) {
-                try {
-                    LoadDoc(true);
-                } catch(Exception e) {
-                    Log.To.Database.W(Tag, $"{this} failed to load external changes", e);
-                }
+                _threadSafety.DoLocked(() =>
+                {
+                    try {
+                        LoadDoc(true);
+                    } catch (Exception e) {
+                        Log.To.Database.W(Tag, $"{this} failed to load external changes", e);
+                    }
+                });
 
                 PostChangedNotifications(true);
             }
@@ -179,7 +243,7 @@ namespace Couchbase.Lite.DB
                 return false;
             }
 
-            var blob = obj as IBlob;
+            var blob = obj as Blob;
             if(blob != null) {
                 return true;
             }
@@ -271,7 +335,7 @@ namespace Couchbase.Lite.DB
 
             C4Document* newDoc = null;
             var endedEarly = false;
-            var success = Database.InBatch(() =>
+            Database.InBatch(() =>
             {
                 var tmp = default(C4Document*);
                 SaveInto(&tmp, deletion, model);
@@ -279,7 +343,7 @@ namespace Couchbase.Lite.DB
                     Merge(resolver, deletion);
                     if (!HasChanges) {
                         endedEarly = true;
-                        return false;
+                        return;
                     }
 
                     SaveInto(&tmp, deletion, model);
@@ -289,15 +353,9 @@ namespace Couchbase.Lite.DB
                 }
 
                 newDoc = tmp;
-                return true;
             });
 
             if (endedEarly) {
-                return;
-            }
-
-            if(!success) {
-                Native.c4doc_free(newDoc);
                 return;
             }
 
@@ -375,12 +433,9 @@ namespace Couchbase.Lite.DB
 
         #region Overrides
 
-        protected internal override IBlob CreateBlob(IDictionary<string, object> properties)
+        protected internal override Blob CreateBlob(IDictionary<string, object> properties)
         {
-            AssertSafety();
-            return new Blob(_database, properties) {
-                CheckThreadSafety = CheckThreadSafety
-            };
+            return _threadSafety.DoLocked(() => new Blob(_database, properties));
         }
 
         internal override void MarkChangedKey(string key)
@@ -403,70 +458,6 @@ namespace Couchbase.Lite.DB
         {
             Dispose(true);
             GC.SuppressFinalize(this);
-        }
-
-        #endregion
-
-        #region IDocument
-
-        public void Delete()
-        {
-            AssertSafety();
-            Save(EffectiveConflictResolver, true);
-        }
-
-        public bool Purge()
-        {
-            AssertSafety();
-            if(!Exists) {
-                return false;
-            }
-
-            Database.InBatch(() =>
-            {
-                LiteCoreBridge.Check(err => NativeRaw.c4doc_purgeRevision(_c4Doc, C4Slice.Null, err));
-                LiteCoreBridge.Check(err => Native.c4doc_save(_c4Doc, 0, err));
-
-                return true;
-            });
-
-            LoadDoc(false);
-            ResetChangesKeys();
-            return true;
-        }
-
-        public void Save()
-        {
-            AssertSafety();
-            Save(EffectiveConflictResolver, false);
-        }
-
-        public new IDocument Set(string key, object value)
-        {
-            base.Set(key, value);
-            return this;
-        }
-
-        #endregion
-
-        #region IModellable
-
-        public T AsModel<T>() where T : IDocumentModel, new()
-        {
-            FLValue* value = NativeRaw.FLValue_FromTrustedData((FLSlice)_c4Doc->selectedRev.body);
-            var retVal = _database.JsonSerializer.Deserialize<T>(value);
-            retVal.Document = this;
-            return retVal;
-        }
-
-        public void Set(IDocumentModel model)
-        {
-            if (model == null) {
-                throw new ArgumentNullException(nameof(model));
-            }
-
-            HasChanges = true;
-            Save(EffectiveConflictResolver, false, model);
         }
 
         #endregion

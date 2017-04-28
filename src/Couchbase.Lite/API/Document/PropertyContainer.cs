@@ -24,17 +24,46 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
 using System.Reflection;
-using System.Text;
 
 using Couchbase.Lite.Serialization;
 using Couchbase.Lite.Support;
 using Couchbase.Lite.Util;
 using LiteCore.Interop;
+using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 
-namespace Couchbase.Lite.DB
+namespace Couchbase.Lite
 {
-    internal abstract unsafe class PropertyContainer : ThreadSafe, IPropertyContainer
+    internal sealed class DictionaryObjectConverter : JsonConverter
+    {
+        public override bool CanRead => false;
+
+        public override bool CanWrite => true;
+
+        public override void WriteJson(JsonWriter writer, object value, JsonSerializer serializer)
+        {
+            var dict = (PropertyContainer)value;
+            writer.WriteStartObject();
+            foreach (var pair in dict.Properties) {
+                writer.WritePropertyName(pair.Key);
+                serializer.Serialize(writer, pair.Value);
+            }
+            writer.WriteEndObject();
+        }
+
+        public override object ReadJson(JsonReader reader, Type objectType, object existingValue, JsonSerializer serializer)
+        {
+            throw new NotImplementedException();
+        }
+
+        public override bool CanConvert(Type objectType)
+        {
+            return typeof(PropertyContainer).GetTypeInfo().IsAssignableFrom(objectType.GetTypeInfo());
+        }
+    }
+
+    [JsonConverter(typeof(DictionaryObjectConverter))]
+    public abstract unsafe class PropertyContainer
     {
         #region Constants
 
@@ -49,12 +78,13 @@ namespace Couchbase.Lite.DB
 
         #region Variables
 
+        protected Dictionary<string, object> _properties;
+        internal SharedStringCache _sharedKeys;
+
         private HashSet<string> _changesKeys;
         private bool _hasChanges;
         private FLDict* _root;
-
-        protected Dictionary<string, object> _properties;
-        protected SharedStringCache _sharedKeys;
+        internal readonly ThreadSafety _threadSafety = new ThreadSafety();
 
         #endregion
 
@@ -69,114 +99,108 @@ namespace Couchbase.Lite.DB
         public IDictionary<string, object> Properties
         {
             get {
-                AssertSafety();
-                if (!HasChanges) {
-                    if (_properties == null) {
-                        var saved = SavedProperties;
-                        if (saved?.Count > 0) {
-                            _properties = new Dictionary<string, object>();
-                            foreach (var pair in saved) {
-                                _properties[pair.Key] = pair.Value;
+                return _threadSafety.DoLocked(() =>
+                {
+                    if (!HasChanges) {
+                        if (_properties == null) {
+                            var saved = SavedProperties;
+                            if (saved?.Count > 0) {
+                                _properties = new Dictionary<string, object>();
+                                foreach (var pair in saved) {
+                                    _properties[pair.Key] = pair.Value;
+                                }
                             }
-                        }
-                        
-                    } else if (_root != null) {
-                        LoadRootIntoProperties();
-                    }
-                }
 
-                return _properties?.Keys.Where(x => _properties[x] != null).ToDictionary(x => x, x => _properties[x]);
+                        } else if (_root != null) {
+                            LoadRootIntoProperties();
+                        }
+                    }
+
+                    return _properties?.Keys.Where(x => _properties[x] != null).ToDictionary(x => x, x => _properties[x]);
+                });
             }
             set {
-                AssertSafety();
-                if (_properties == value) {
-                    return;
-                }
-
-                // Convert each property value if needed, build up changesKeys set, and invalidate
-                // obsolete subdocuments
-                var changesKeys = new HashSet<string>();
-                var result = value != null ? new Dictionary<string, object>(value) : null;
-
-                if (value?.Count > 0) {
-                    foreach(var pair in value) {
-                        ValidateObjectType(pair.Value);
-                        result[pair.Key] = ConvertValue(pair.Value, Properties?.Get(pair.Key), pair.Key);
-                        changesKeys.Add(pair.Key);
+                _threadSafety.DoLocked(() =>
+                {
+                    if (_properties == value) {
+                        return;
                     }
-                }
 
-                // Invalidate obsolete subdocuments from the current _properties:
-                var oldKeys = _properties?.Keys;
-                if (oldKeys != null) {
-                    var removedKeys = oldKeys.Except(changesKeys);
-                    foreach (var key in removedKeys) {
-                        InvalidateIfSubdocument(_properties[key]);
+                    // Convert each property value if needed, build up changesKeys set, and invalidate
+                    // obsolete subdocuments
+                    var changesKeys = new HashSet<string>();
+                    var result = value != null ? new Dictionary<string, object>(value) : null;
+
+                    if (value?.Count > 0) {
+                        foreach (var pair in value) {
+                            ValidateObjectType(pair.Value);
+                            result[pair.Key] = ConvertValue(pair.Value, Properties?.Get(pair.Key), pair.Key);
+                            changesKeys.Add(pair.Key);
+                        }
                     }
-                }
 
-                // Add keys from _root that do not exist in the changedKeys (deleting):
-                if (_root != null) {
-                    FLDictIterator iter;
-                    Native.FLDictIterator_Begin(_root, &iter);
-                    string key;
-                    while (null != (key = SharedKeys.GetDictIterKey(&iter))) {
-                        changesKeys.Add(key);
-                        Native.FLDictIterator_Next(&iter);
+                    // Invalidate obsolete subdocuments from the current _properties:
+                    var oldKeys = _properties?.Keys;
+                    if (oldKeys != null) {
+                        var removedKeys = oldKeys.Except(changesKeys);
+                        foreach (var key in removedKeys) {
+                            InvalidateIfSubdocument(_properties[key]);
+                        }
                     }
-                }
 
-                // Update _properties:
-                _properties = result;
+                    // Add keys from _root that do not exist in the changedKeys (deleting):
+                    if (_root != null) {
+                        FLDictIterator iter;
+                        Native.FLDictIterator_Begin(_root, &iter);
+                        string key;
+                        while (null != (key = SharedKeys.GetDictIterKey(&iter))) {
+                            changesKeys.Add(key);
+                            Native.FLDictIterator_Next(&iter);
+                        }
+                    }
 
-                // Mark changes:
-                _changesKeys = changesKeys;
-                HasChanges = true;
+                    // Update _properties:
+                    _properties = result;
+
+                    // Mark changes:
+                    _changesKeys = changesKeys;
+                    HasChanges = true;
+                });
             }
         }
 
         protected IReadOnlyDictionary<string, object> SavedProperties
         {
             get {
-                AssertSafety();
-                if (_properties != null && !HasChanges) {
-                    LoadRootIntoProperties();
-                    return _properties;
-                }
+                return _threadSafety.DoLocked(() =>
+                {
+                    if (_properties != null && !HasChanges) {
+                        LoadRootIntoProperties();
+                        return _properties;
+                    }
 
-                return FLValueConverter.ToObject((FLValue *)_root, SharedKeys) as IReadOnlyDictionary<string, object>;
+                    return FLValueConverter.ToObject((FLValue*)_root, SharedKeys) as IReadOnlyDictionary<string, object>;
+                });
             }
         }
 
         internal virtual bool HasChanges
         {
-            get {
-                AssertSafety();
-                return _hasChanges;
-            }
-            set {
-                AssertSafety();
-                _hasChanges = value;
-            }
+            get => _threadSafety.DoLocked(() => _hasChanges);
+            set => _threadSafety.DoLocked(() => _hasChanges = value);
         }
 
         internal SharedStringCache SharedKeys
         {
-            get {
-                AssertSafety();
-                return _sharedKeys;
-            }
-            set {
-                AssertSafety();
-                _sharedKeys = value;
-            }
+            get => _threadSafety.DoLocked(() => _sharedKeys);
+            set => _threadSafety.DoLocked(() => _sharedKeys = value);
         }
 
         #endregion
 
         #region Constructors
 
-        protected PropertyContainer(SharedStringCache sharedKeys)
+        internal PropertyContainer(SharedStringCache sharedKeys)
         {
             _sharedKeys = sharedKeys;
         }
@@ -185,21 +209,180 @@ namespace Couchbase.Lite.DB
 
         #region Public Methods
 
-        public Document GetDocument(string key)
+        public bool Contains(string key)
         {
-            throw new NotImplementedException();
+            return _threadSafety.DoLocked(() =>
+            {
+                if (_properties != null) {
+                    return _properties.ContainsKey(key);
+                }
+
+                return FleeceValueForKey(key) != null;
+            });
         }
 
-        public IList<Document> GetDocuments(string key)
+        public object Get(string key)
         {
-            throw new NotImplementedException();
+            return _threadSafety.DoLocked(() =>
+            {
+                var obj = ((IDictionary<string, object>)_properties)?.Get(key);
+                if (obj != null || HasChanges) {
+                    return obj;
+                }
+
+                obj = FleeceValueToObject(FleeceValueForKey(key), key);
+                CacheValue(obj, key, false);
+                return obj;
+            });
+        }
+
+        public IList<object> GetArray(string key)
+        {
+            return Get(key) as IList<object>;
+        }
+
+        public Blob GetBlob(string key)
+        {
+            return Get(key) as Blob;
+        }
+
+        public bool GetBoolean(string key)
+        {
+            return _threadSafety.DoLocked(() =>
+            {
+                var val = Get(key);
+                if (val == null || HasChanges) {
+                    if (val == null) {
+                        return false;
+                    }
+
+                    return val is bool ? (bool)val : true;
+                }
+
+                return Native.FLValue_AsBool(FleeceValueForKey(key));
+            });
+        }
+
+        public DateTimeOffset? GetDate(string key)
+        {
+            return _threadSafety.DoLocked<DateTimeOffset?>(() =>
+            {
+                DateTimeOffset retVal;
+                if (TryGet(key, out retVal)) {
+                    return retVal;
+                }
+
+                var dateString = GetString(key);
+                if (dateString == null) {
+                    return null;
+                }
+
+                return DateTimeOffset.ParseExact(dateString, "o", CultureInfo.InvariantCulture, DateTimeStyles.None);
+            });
+        }
+
+        public double GetDouble(string key)
+        {
+            return _threadSafety.DoLocked(() =>
+            {
+                double retVal;
+                return TryGet(key, out retVal) ? retVal : Native.FLValue_AsDouble(FleeceValueForKey(key));
+            });
+        }
+
+        public float GetFloat(string key)
+        {
+            return _threadSafety.DoLocked(() =>
+            {
+                float retVal;
+                return TryGet(key, out retVal) ? retVal : Native.FLValue_AsFloat(FleeceValueForKey(key));
+            });
+        }
+
+        public long GetLong(string key)
+        {
+            return _threadSafety.DoLocked(() =>
+            {
+                long retVal;
+                return TryGet(key, out retVal) ? retVal : Native.FLValue_AsInt(FleeceValueForKey(key));
+            });
+        }
+
+        public string GetString(string key)
+        {
+            return Get(key) as string;
+        }
+
+        public Subdocument GetSubdocument(string key)
+        {
+            return Get(key) as Subdocument;
+        }
+
+        public PropertyContainer Remove(string key)
+        {
+            Set(key, null);
+            return this;
+        }
+
+        public void Revert()
+        {
+            _threadSafety.DoLocked(() =>
+            {
+                if (_changesKeys == null) {
+                    return;
+                }
+
+                foreach (var key in _changesKeys) {
+                    IDictionary<string, object> properties = _properties;
+                    var value = properties.Get(key);
+                    var subdoc = value as Subdocument;
+                    var arr = value as IList;
+                    if (subdoc != null) {
+                        if (subdoc.HasRoot()) {
+                            subdoc.Revert();
+                            continue; // Keep the subdocument value
+                        }
+
+                        // Invalidate the subdocument set to the properties
+                        subdoc.Invalidate();
+                    } else if (arr != null) {
+                        foreach (var v in arr) {
+                            (v as Subdocument)?.Invalidate();
+                        }
+                    }
+
+                    _properties.Remove(key);
+                }
+
+                _changesKeys.Clear();
+                HasChanges = false;
+            });
+        }
+
+        public PropertyContainer Set(string key, object value)
+        {
+            _threadSafety.DoLocked(() =>
+            {
+                ValidateObjectType(value);
+                var oldValue = Properties?.Get(key);
+                if (value?.Equals(oldValue) == true) {
+                    return;
+                }
+
+                value = ConvertValue(value, oldValue, key);
+                MutateProperties();
+                CacheValue(value, key, true);
+                MarkChangedKey(key);
+            });
+
+            return this;
         }
 
         #endregion
 
         #region Protected Internal Methods
 
-        protected internal abstract IBlob CreateBlob(IDictionary<string, object> properties);
+        protected internal abstract Blob CreateBlob(IDictionary<string, object> properties);
 
         #endregion
 
@@ -210,7 +393,7 @@ namespace Couchbase.Lite.DB
             return _root != null;
         }
 
-        protected void SetRootDict(FLDict* root)
+        internal void SetRootDict(FLDict* root)
         {
             _root = root;
             _sharedKeys.UseDocumentRoot(root);
@@ -219,19 +402,6 @@ namespace Couchbase.Lite.DB
         #endregion
 
         #region Internal Methods
-
-        internal void ResetChangesKeys()
-        {
-            AssertSafety();
-            if (_properties != null) {
-                foreach (var pair in _properties) {
-                    ResetChangesKeys(pair.Value as Subdocument);
-                }
-            }
-
-            _changesKeys?.Clear();
-            HasChanges = false;
-        }
 
         internal virtual void MarkChangedKey(string key)
         {
@@ -247,6 +417,21 @@ namespace Couchbase.Lite.DB
             if (!_hasChanges) {
                 HasChanges = true;
             }
+        }
+
+        internal void ResetChangesKeys()
+        {
+            _threadSafety.DoLocked(() =>
+            {
+                if (_properties != null) {
+                    foreach (var pair in _properties) {
+                        ResetChangesKeys(pair.Value as Subdocument);
+                    }
+                }
+
+                _changesKeys?.Clear();
+                HasChanges = false;
+            });
         }
 
         // Update all subdocuments in _properties with the new FLDict values and invalidate all
@@ -275,27 +460,68 @@ namespace Couchbase.Lite.DB
 
         #region Private Methods
 
+        private static bool IsValidScalarType(Type type)
+        {
+            var info = type.GetTypeInfo();
+            if (info.IsPrimitive) {
+                return true;
+            }
+
+            return _ValidTypes.Any(x => info.IsAssignableFrom(x));
+        }
+
+        private static void ValidateObjectType(object value)
+        {
+            if (value == null) {
+                return;
+            }
+
+            var type = value.GetType();
+            if(IsValidScalarType(type)) {
+                return;
+            }
+
+            if(value is Subdocument || value is Blob) {
+                return;
+            }
+
+            var jType = value as JToken;
+            if (jType != null) {
+                if (jType.Type == JTokenType.Object || jType.Type == JTokenType.Array) {
+                    return;
+                }
+
+                throw new ArgumentException($"Invalid type in document properties: {type.Name}", nameof(value));
+            }
+
+            var array = value as IList;
+            if(array != null) {
+                foreach (var item in array) {
+                    ValidateObjectType(item);
+                }
+
+                return;
+            }
+
+            var dict = value as IDictionary<string, object>;
+            if (dict == null) {
+                throw new ArgumentException($"Invalid type in document properties: {type.Name}", nameof(value));
+            }
+
+            foreach(var item in dict.Values) {
+                ValidateObjectType(item);
+            }
+        }
+
         private void CacheValue(object value, string key, bool changed)
         {
-            if (changed || value is ISubdocument || value is IList) {
+            if (changed || value is Subdocument || value is IList) {
                 if(_properties == null) {
                     _properties = new Dictionary<string, object>();
                 }
 
                 _properties[key] = value;
             }
-        }
-
-        private Subdocument CreateSubdocument(string key)
-        {
-            var sk = SharedKeys;
-            var subDoc = new Subdocument(this, sk) {
-                Key = key,
-                CheckThreadSafety = CheckThreadSafety
-            };
-
-            subDoc.SetOnMutate(GetOnMutateBlock(key));
-            return subDoc;
         }
 
         private object ConvertArray(IList<object> array, object oldValue, string key)
@@ -374,7 +600,9 @@ namespace Couchbase.Lite.DB
                         oldSubdoc.Properties = subdoc.Properties;
                         return oldSubdoc;
                     } else {
-                        subdoc = SubdocumentFactory.Create(subdoc) as Subdocument;
+                        subdoc = new Subdocument {
+                            Properties = subdoc.Properties
+                        };
                     }
                 }
             }
@@ -422,6 +650,17 @@ namespace Couchbase.Lite.DB
             InvalidateIfSubdocument(oldValue);
 
             return value;
+        }
+
+        private Subdocument CreateSubdocument(string key)
+        {
+            var sk = SharedKeys;
+            var subDoc = new Subdocument(this, sk) {
+                Key = key
+            };
+
+            subDoc.SetOnMutate(GetOnMutateBlock(key));
+            return subDoc;
         }
 
         private FLValue* FleeceValueForKey(string key)
@@ -485,16 +724,6 @@ namespace Couchbase.Lite.DB
             }
         }
 
-        private static bool IsValidScalarType(Type type)
-        {
-            var info = type.GetTypeInfo();
-            if (info.IsPrimitive) {
-                return true;
-            }
-
-            return _ValidTypes.Any(x => info.IsAssignableFrom(x));
-        }
-
         private void LoadRootIntoProperties()
         {
             if (HasChanges) {
@@ -531,6 +760,19 @@ namespace Couchbase.Lite.DB
             }
         }
 
+        private void ResetChangesKeys(object value)
+        {
+            var subdoc = value as Subdocument;
+            var arr = value as IList;
+            if (subdoc != null) {
+                subdoc.ResetChangesKeys();
+            } else if(arr != null) {
+                foreach (var v in arr) {
+                    ResetChangesKeys(v);
+                }
+            }
+        }
+
         private bool TryGet<T>(string key, out T value)
         {
             if(_properties != null) {
@@ -548,19 +790,6 @@ namespace Couchbase.Lite.DB
             var typeKey = FLSlice.Constant("_cbltype");
             var type = SharedKeys.GetDictValue(dict, typeKey);
             return NativeRaw.FLValue_AsString(type);
-        }
-
-        private void ResetChangesKeys(object value)
-        {
-            var subdoc = value as Subdocument;
-            var arr = value as IList;
-            if (subdoc != null) {
-                subdoc.ResetChangesKeys();
-            } else if(arr != null) {
-                foreach (var v in arr) {
-                    ResetChangesKeys(v);
-                }
-            }
         }
 
         private object UpdateRoot(object value, FLValue* fValue, string key)
@@ -610,205 +839,6 @@ namespace Couchbase.Lite.DB
             }
 
             return null;
-        }
-
-        private static void ValidateObjectType(object value)
-        {
-            if (value == null) {
-                return;
-            }
-
-            var type = value.GetType();
-            if(IsValidScalarType(type)) {
-                return;
-            }
-
-            if(value is ISubdocument || value is IBlob) {
-                return;
-            }
-
-            var jType = value as JToken;
-            if (jType != null) {
-                if (jType.Type == JTokenType.Object || jType.Type == JTokenType.Array) {
-                    return;
-                }
-
-                throw new ArgumentException($"Invalid type in document properties: {type.Name}", nameof(value));
-            }
-
-            var array = value as IList;
-            if(array != null) {
-                foreach (var item in array) {
-                    ValidateObjectType(item);
-                }
-
-                return;
-            }
-
-            var dict = value as IDictionary<string, object>;
-            if (dict == null) {
-                throw new ArgumentException($"Invalid type in document properties: {type.Name}", nameof(value));
-            }
-
-            foreach(var item in dict.Values) {
-                ValidateObjectType(item);
-            }
-        }
-
-        #endregion
-
-        #region IPropertyContainer
-
-        public bool Contains(string key)
-        {
-            AssertSafety();
-            if(_properties != null) {
-                return _properties.ContainsKey(key);
-            }
-
-            return FleeceValueForKey(key) != null;
-        }
-
-        public object Get(string key)
-        {
-            AssertSafety();
-            var obj = ((IDictionary<string, object>)_properties)?.Get(key);
-            if(obj != null || HasChanges) {
-                return obj;
-            }
-
-            obj = FleeceValueToObject(FleeceValueForKey(key), key);
-            CacheValue(obj, key, false);
-            return obj;
-        }
-
-        public IList<object> GetArray(string key)
-        {
-            return Get(key) as IList<object>;
-        }
-
-        public IBlob GetBlob(string key)
-        {
-            return Get(key) as IBlob;
-        }
-
-        public bool GetBoolean(string key)
-        {
-            AssertSafety();
-            var val = Get(key);
-            if (val == null || HasChanges) {
-                if (val == null) {
-                    return false;
-                }
-
-                return val is bool ? (bool)val : true;
-            }
-
-            return Native.FLValue_AsBool(FleeceValueForKey(key));
-        }
-
-        public DateTimeOffset? GetDate(string key)
-        {
-            AssertSafety();
-            DateTimeOffset retVal;
-            if(TryGet(key, out retVal)) {
-                return retVal;
-            }
-
-            var dateString = GetString(key);
-            if(dateString == null) {
-                return null;
-            }
-
-            return DateTimeOffset.ParseExact(dateString, "o", CultureInfo.InvariantCulture, DateTimeStyles.None);
-        }
-
-        public double GetDouble(string key)
-        {
-            AssertSafety();
-            double retVal;
-            return TryGet(key, out retVal) ? retVal : Native.FLValue_AsDouble(FleeceValueForKey(key));
-        }
-
-        public float GetFloat(string key)
-        {
-            AssertSafety();
-            float retVal;
-            return TryGet(key, out retVal) ? retVal : Native.FLValue_AsFloat(FleeceValueForKey(key));
-        }
-
-        public long GetLong(string key)
-        {
-            AssertSafety();
-            long retVal;
-            return TryGet(key, out retVal) ? retVal : Native.FLValue_AsInt(FleeceValueForKey(key));
-        }
-
-        public string GetString(string key)
-        {
-            AssertSafety();
-            return Get(key) as string;
-        }
-
-        public ISubdocument GetSubdocument(string key)
-        {
-            return Get(key) as ISubdocument;
-        }
-
-        public IPropertyContainer Remove(string key)
-        {
-            Set(key, null);
-            return this;
-        }
-
-        public void Revert()
-        {
-            AssertSafety();
-            if(_changesKeys == null) {
-                return;
-            }
-
-            foreach (var key in _changesKeys) {
-                IDictionary<string, object> properties = _properties;
-                var value = properties.Get(key);
-                var subdoc = value as Subdocument;
-                var arr = value as IList;
-                if (subdoc != null) {
-                    if (subdoc.HasRoot()) {
-                        subdoc.Revert();
-                        continue; // Keep the subdocument value
-                    }
-
-                    // Invalidate the subdocument set to the properties
-                    subdoc.Invalidate();
-                } else if (arr != null) {
-                    foreach (var v in arr) {
-                        (v as Subdocument)?.Invalidate();
-                    }
-                }
-
-                _properties.Remove(key);
-            }
-
-            _changesKeys.Clear();
-            HasChanges = false;
-        }
-
-        public IPropertyContainer Set(string key, object value)
-        {
-            AssertSafety();
-            ValidateObjectType(value);
-            var oldValue = Properties?.Get(key);
-            if (value?.Equals(oldValue) == true) {
-                return this;
-            }
-
-            value = ConvertValue(value, oldValue, key);
-            MutateProperties();
-            CacheValue(value, key, true);
-            MarkChangedKey(key);
-
-            return this;
         }
 
         #endregion

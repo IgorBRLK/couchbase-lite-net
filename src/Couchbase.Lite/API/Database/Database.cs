@@ -39,9 +39,9 @@ using LiteCore.Util;
 using Newtonsoft.Json;
 using ObjCRuntime;
 
-namespace Couchbase.Lite.DB
+namespace Couchbase.Lite
 {
-    internal sealed unsafe class Database : ThreadSafe, IDatabase
+    public sealed unsafe class Database : IDisposable
     {
         #region Constants
 
@@ -64,37 +64,53 @@ namespace Couchbase.Lite.DB
         #region Variables
 
         private readonly SharedStringCache _sharedStrings;
+        private readonly ThreadSafety _threadSafety = new ThreadSafety();
+        private readonly HashSet<Document> _unsavedDocuments = new HashSet<Document>();
 
+        /// <summary>
+        /// An event fired whenever the database changes
+        /// </summary>
         public event EventHandler<DatabaseChangedEventArgs> Changed;
+
+
         private IConflictResolver _conflictResolver;
-        
         private IJsonSerializer _jsonSerializer;
         private DatabaseObserver _obs;
-        private readonly HashSet<Document> _unsavedDocuments = new HashSet<Document>();
         private long p_c4db;
 
         #endregion
 
         #region Properties
 
+        /// <summary>
+        /// Gets or sets the conflict resolver to use when conflicts arise
+        /// </summary>
         public IConflictResolver ConflictResolver
         {
-            get {
-                AssertSafety();
-                return _conflictResolver;
-            }
-            set {
-                AssertSafety();
-                _conflictResolver = value;
-            }
+            get => _threadSafety.DoLocked(() => _conflictResolver);
+            set => _threadSafety.DoLocked(() => _conflictResolver = value);
         }
 
-        public IDocument this[string id] => GetDocument(id);
+        /// <summary>
+        /// Bracket operator for retrieving <see cref="Document"/>s
+        /// </summary>
+        /// <param name="id">The ID of the <see cref="Document"/> to retrieve</param>
+        /// <returns>The instantiated <see cref="Document"/></returns>
+        public Document this[string id] => GetDocument(id);
 
+        /// <summary>
+        /// Gets the name of the database
+        /// </summary>
         public string Name { get; }
 
+        /// <summary>
+        /// Gets the options that were used to create the database
+        /// </summary>
         public DatabaseOptions Options { get; }
 
+        /// <summary>
+        /// Gets the path on disk where the database exists
+        /// </summary>
         public string Path
         {
             get {
@@ -103,20 +119,24 @@ namespace Couchbase.Lite.DB
             }
         }
 
+        internal ICollection<IReplication> ActiveReplications { get; } = new HashSet<IReplication>();
+
         internal C4BlobStore* BlobStore
         {
             get {
-                AssertSafety();
                 CheckOpen();
-                return (C4BlobStore*)LiteCoreBridge.Check(err => Native.c4db_getBlobStore(c4db, err));
+                C4BlobStore* retVal = null;
+                _threadSafety.DoLocked(() => retVal = (C4BlobStore *)LiteCoreBridge.Check(err => Native.c4db_getBlobStore(c4db, err)));
+                return retVal;
             }
         }
 
         internal C4Database* c4db
         {
             get {
-                AssertSafety();
-                return _c4db;
+                C4Database* retVal = null;
+                _threadSafety.DoLocked(() => retVal = _c4db);
+                return retVal;
             }
         }
 
@@ -126,17 +146,9 @@ namespace Couchbase.Lite.DB
             set => _jsonSerializer = value;
         }
 
-        internal SharedStringCache SharedStrings
-        {
-            get {
-                AssertSafety();
-                return _sharedStrings;
-            }
-        }
-
         internal IDictionary<Uri, IReplication> Replications { get; } = new Dictionary<Uri, IReplication>();
 
-        internal ICollection<IReplication> ActiveReplications { get; } = new HashSet<IReplication>();
+        internal SharedStringCache SharedStrings => _threadSafety.DoLocked(() => _sharedStrings);
 
         private C4Database *_c4db
         {
@@ -155,27 +167,26 @@ namespace Couchbase.Lite.DB
             _DbObserverCallback = DbObserverCallback;
         }
 
-        public Database(Database other) : this(other.Name, other.Options)
-        {
-            
-        }
-
+        /// <summary>
+        /// Creates a new Database with the given name and default options
+        /// </summary>
+        /// <param name="name">The name for the new database object</param>
         public Database(string name) : this(name, DatabaseOptions.Default)
         {
             
         }
 
+        /// <summary>
+        /// Creates a new database with the given name and options
+        /// </summary>
+        /// <param name="name">The name for the new database object</param>
+        /// <param name="options">The options for the new database object</param>
         public Database(string name, DatabaseOptions options) 
         {
-            if(name == null) {
-                throw new ArgumentNullException(nameof(name));
-            }
-
-            Name = name;
+            Name = name ?? throw new ArgumentNullException(nameof(name));
             Options = options;
             Open();
             _sharedStrings = new SharedStringCache(_c4db);
-            CheckThreadSafety = options.CheckThreadSafety;
         }
 
         ~Database()
@@ -187,6 +198,12 @@ namespace Couchbase.Lite.DB
 
         #region Public Methods
 
+        /// <summary>
+        /// Deletes the underlying database file for a database matching
+        /// the given name in the given directory
+        /// </summary>
+        /// <param name="name">The name of the database to delete the file for</param>
+        /// <param name="directory">The directory to search for the database in</param>
         public static void Delete(string name, string directory)
         {
             if(name == null) {
@@ -201,6 +218,13 @@ namespace Couchbase.Lite.DB
             });
         }
 
+        /// <summary>
+        /// Checks if a database with the given name exists in the given
+        /// directory
+        /// </summary>
+        /// <param name="name">The name of the database to search for</param>
+        /// <param name="directory">The directory to search for the database in</param>
+        /// <returns><c>true</c> if the database exists, <c>false</c> otherwise</returns>
         public static bool Exists(string name, string directory)
         {
             if(name == null) {
@@ -210,25 +234,208 @@ namespace Couchbase.Lite.DB
             return File.Exists(DatabasePath(name, directory));
         }
 
-        public void ChangeEncryptionKey(object key)
+        //public void ChangeEncryptionKey(object key)
+        //{
+        //    throw new NotImplementedException();
+        //}
+
+        /// <summary>
+        /// Closes the database
+        /// </summary>
+        public void Close()
         {
-            throw new NotImplementedException();
+            Dispose();
         }
 
+        /// <summary>
+        /// Creates a new <see cref="Document"/> with a unique ID
+        /// </summary>
+        /// <returns>The created document</returns>
+        public Document CreateDocument()
+        {
+            
+            return _threadSafety.DoLocked(() => GetDocument(Misc.CreateGuid(), false));
+        }
+
+        /// <summary>
+        /// Creates an index of the given type on the given path with the given options
+        /// </summary>
+        /// <param name="expressions">The expressions to create the index on (must be either string
+        /// or IExpression)</param>
+        /// <param name="indexType">The type of index to create</param>
+        /// <param name="options">The options to apply to the index</param>
         public void CreateIndex(IList expressions, IndexType indexType, IndexOptions options)
         {
-            AssertSafety();
-            CheckOpen();
-            var jsonObj = QueryExpression.EncodeToJSON(expressions);
-            var json = JsonConvert.SerializeObject(jsonObj);
-            LiteCoreBridge.Check(err =>
+            _threadSafety.DoLocked(() =>
             {
-                if(options == null) {
-                    return Native.c4db_createIndex(c4db, json, (C4IndexType)indexType, null, err);
-                } else {
-                    var localOpts = IndexOptions.Internal(options);
-                    return Native.c4db_createIndex(c4db, json, (C4IndexType)indexType, &localOpts, err);
+                CheckOpen();
+                var jsonObj = QueryExpression.EncodeToJSON(expressions);
+                var json = JsonConvert.SerializeObject(jsonObj);
+                LiteCoreBridge.Check(err =>
+                {
+                    if (options == null) {
+                        return Native.c4db_createIndex(c4db, json, (C4IndexType) indexType, null, err);
+                    } else {
+                        var localOpts = IndexOptions.Internal(options);
+                        return Native.c4db_createIndex(c4db, json, (C4IndexType) indexType, &localOpts, err);
+                    }
+                });
+            });
+        }
+
+        /// <summary>
+        /// Creates an <see cref="IndexType.ValueIndex"/> index on the given path
+        /// </summary>
+        /// <param name="expressions">The expressions to create the index on</param>
+        public void CreateIndex(IList<IExpression> expressions)
+        {
+            _threadSafety.DoLocked(() =>
+            {
+                CheckOpen();
+                CreateIndex(expressions as IList, IndexType.ValueIndex, null);
+            });
+        }
+
+        /// <summary>
+        /// Creates an <see cref="IReplication"/> object to or from the database
+        /// to a given remote endpoint
+        /// </summary>
+        /// <param name="remoteUrl">The remote endpoint to replicate with</param>
+        /// <returns>The instantiated <see cref="IReplication"/> object</returns>
+        public IReplication CreateReplication(Uri remoteUrl)
+        {
+            if (remoteUrl == null) {
+                throw new ArgumentNullException(nameof(remoteUrl));
+            }
+
+            var repl = Replications.Get(remoteUrl);
+            if (repl == null) {
+                repl = new Replication(this, remoteUrl, null);
+                Replications[remoteUrl] = repl;
+            }
+
+            return repl;
+        }
+
+        /// <summary>
+        /// Creates an <see cref="IReplication"/> object to or from the database
+        /// to another local database
+        /// </summary>
+        /// <param name="otherDatabase">The other database to replicate with</param>
+        /// <returns>The instantiated <see cref="IReplication"/> object</returns>
+        public IReplication CreateReplication(Database otherDatabase)
+        {
+            if (otherDatabase == null) {
+                throw new ArgumentNullException(nameof(otherDatabase));
+            }
+
+            if (otherDatabase == this) {
+                throw new InvalidOperationException("Source and target database are the same");
+            }
+
+            var key = new Uri(otherDatabase.Path);
+            var repl = Replications.Get(key);
+            if (repl == null) {
+                repl = new Replication(this, null, otherDatabase);
+                Replications[key] = repl;
+            }
+
+            return repl;
+        }
+
+        /// <summary>
+        /// Deletes the database
+        /// </summary>
+        public void Delete()
+        {
+            _threadSafety.DoLocked(() =>
+            {
+                CheckOpen();
+                var old = (C4Database*) Interlocked.Exchange(ref p_c4db, 0);
+                if (old == null) {
+                    throw new InvalidOperationException("Attempt to perform an operation on a closed database");
                 }
+
+                LiteCoreBridge.Check(err => Native.c4db_delete(old, err));
+                Native.c4db_free(old);
+                _obs?.Dispose();
+                _obs = null;
+            });
+        }
+
+        /// <summary>
+        /// Deletes an index of the given <see cref="IndexType"/> on the given propertyPath
+        /// </summary>
+        /// <param name="propertyPath">The path of the index to delete</param>
+        /// <param name="type">The type of the index to delete</param>
+        public void DeleteIndex(string propertyPath, IndexType type)
+        {
+            _threadSafety.DoLocked(() =>
+            {
+                CheckOpen();
+                LiteCoreBridge.Check(err => Native.c4db_deleteIndex(c4db, propertyPath, (C4IndexType) type, err));
+            });
+        }
+
+        /// <summary>
+        /// Checks if the <see cref="Document"/> with the given ID exists in the database
+        /// </summary>
+        /// <param name="documentID">The ID to check</param>
+        /// <returns><c>true</c> if the document exists, <c>false</c> otherwise</returns>
+        public bool DocumentExists(string documentID)
+        {
+            return _threadSafety.DoLocked(() =>
+            {
+                CheckOpen();
+                if (documentID == null) {
+                    throw new ArgumentNullException(nameof(documentID));
+                }
+
+                var check = (C4Document*) RetryHandler.RetryIfBusy()
+                    .AllowError((int) LiteCoreError.NotFound, C4ErrorDomain.LiteCoreDomain)
+                    .Execute(err => Native.c4doc_get(c4db, documentID, true, err));
+                var exists = check != null;
+                Native.c4doc_free(check);
+                return exists;
+            });
+        }
+
+        /// <summary>
+        /// Gets or creates an <see cref="Document"/> with the specified ID
+        /// </summary>
+        /// <param name="id">The ID to use when creating or getting the document</param>
+        /// <returns>The instantiated <see cref="Document" /></returns>
+        public Document GetDocument(string id)
+        {
+            return _threadSafety.DoLocked(() => GetDocument(id, false));
+        }
+
+        /// <summary>
+        /// Runs the given batch of operations as an atomic unit
+        /// </summary>
+        /// <param name="a">The <see cref="Action" /> containing the operations.  
+        public void InBatch(Action a)
+        {
+            _threadSafety.DoLocked(() =>
+            {
+                CheckOpen();
+                PerfTimer.StartEvent("InBatch_BeginTransaction");
+                LiteCoreBridge.Check(err => Native.c4db_beginTransaction(_c4db, err));
+                PerfTimer.StopEvent("InBatch_BeginTransaction");
+                var success = true;
+                try {
+                    a();
+                } catch (Exception e) {
+                    Log.To.Database.W(Tag, "Exception during InBatch, rolling back...", e);
+                    success = false;
+                    throw;
+                } finally {
+                    PerfTimer.StartEvent("InBatch_EndTransaction");
+                    LiteCoreBridge.Check(err => Native.c4db_endTransaction(_c4db, success, err));
+                    PerfTimer.StopEvent("InBatch_EndTransaction");
+                }
+
+                PostDatabaseChanged();
             });
         }
 
@@ -324,9 +531,7 @@ namespace Couchbase.Lite.DB
         private Document GetDocument(string docID, bool mustExist)
         {
             CheckOpen();
-            var doc = new Document(this, docID, mustExist) {
-                CheckThreadSafety = CheckThreadSafety
-            };
+            var doc = new Document(this, docID, mustExist);
 
             if (mustExist && !doc.Exists) {
                 Log.To.Database.V(Tag, "Requested existing document {0}, but it doesn't exist", 
@@ -397,15 +602,7 @@ namespace Couchbase.Lite.DB
                     if(docIDs.Count > 0) {
                         // Only notify if there are actually changes to send
                         var args = new DatabaseChangedEventArgs(docIDs.ToArray(), lastSequence, external);
-                        var sender = IsSafeToUse ? this : new Database(this);
-                        try {
-                            Changed?.Invoke(sender, args);
-                        } finally {
-                            if (!IsSafeToUse) {
-                                sender.Dispose();
-                            }
-                        }
-
+                        Changed?.Invoke(this, args);
                         docIDs.Clear();
                     }
                 }
@@ -420,134 +617,6 @@ namespace Couchbase.Lite.DB
                     lastSequence = changes.Last().sequence;
                 }
             } while(nChanges > 0);
-        }
-
-        #endregion
-
-        #region IDatabase
-
-        public void Close()
-        {
-            Dispose();
-        }
-
-        public IDocument CreateDocument()
-        {
-            AssertSafety();
-            return GetDocument(Misc.CreateGuid(), false);
-        }
-
-        public void CreateIndex(IList<IExpression> expressions)
-        {
-            AssertSafety();
-            CheckOpen();
-            CreateIndex(expressions as IList, IndexType.ValueIndex, null);
-        }
-
-        public void Delete()
-        {
-            AssertSafety();
-            CheckOpen();
-            var old = (C4Database *)Interlocked.Exchange(ref p_c4db, 0);
-            if(old == null) {
-                throw new InvalidOperationException("Attempt to perform an operation on a closed database");
-            }
-
-            LiteCoreBridge.Check(err => Native.c4db_delete(old, err));
-            Native.c4db_free(old);
-            _obs?.Dispose();
-            _obs = null;
-        }
-
-        public void DeleteIndex(string propertyPath, IndexType type)
-        {
-            AssertSafety();
-            CheckOpen();
-            LiteCoreBridge.Check(err => Native.c4db_deleteIndex(c4db, propertyPath, (C4IndexType)type, err));
-        }
-
-        public bool DocumentExists(string documentID)
-        {
-            AssertSafety();
-            CheckOpen();
-            if(documentID == null) {
-                throw new ArgumentNullException(nameof(documentID));
-            }
-
-            var check = (C4Document*)RetryHandler.RetryIfBusy().AllowError((int)LiteCoreError.NotFound, C4ErrorDomain.LiteCoreDomain)
-                .Execute(err => Native.c4doc_get(c4db, documentID, true, err));
-            var exists = check != null;
-            Native.c4doc_free(check);
-            return exists;
-        }
-
-        public IDocument GetDocument(string id)
-        {
-            AssertSafety();
-            return GetDocument(id, false);
-        }
-
-        public bool InBatch(Func<bool> a)
-        {
-            AssertSafety();
-            CheckOpen();
-            PerfTimer.StartEvent("InBatch_BeginTransaction");
-            LiteCoreBridge.Check(err => Native.c4db_beginTransaction(_c4db, err));
-            PerfTimer.StopEvent("InBatch_BeginTransaction");
-            var success = true;
-            try {
-                success = a();
-            } catch(Exception e) {
-                Log.To.Database.W(Tag, "Exception during InBatch, rolling back...", e);
-                success = false;
-                throw;
-            } finally {
-                PerfTimer.StartEvent("InBatch_EndTransaction");
-                LiteCoreBridge.Check(err => Native.c4db_endTransaction(_c4db, success, err));
-                PerfTimer.StopEvent("InBatch_EndTransaction");
-            }
-
-            PostDatabaseChanged();
-            return success;
-        }
-
-        public IReplication CreateReplication(Uri remoteUrl)
-        {
-            if (remoteUrl == null) {
-                throw new ArgumentNullException(nameof(remoteUrl));
-            }
-
-            var repl = Replications.Get(remoteUrl);
-            if (repl == null) {
-                repl = new Replication(this, remoteUrl, null) {
-                    CheckThreadSafety = CheckThreadSafety
-                };
-                Replications[remoteUrl] = repl;
-            }
-
-            return repl;
-        }
-
-        public IReplication CreateReplication(IDatabase otherDatabase)
-        {
-            if (otherDatabase == null) {
-                throw new ArgumentNullException(nameof(otherDatabase));
-            }
-
-            if (otherDatabase == this) {
-                throw new InvalidOperationException("Source and target database are the same");
-            }
-
-            var key = new Uri(otherDatabase.Path);
-            var repl = Replications.Get(key);
-            if (repl == null) {
-                repl = new Replication(this, null, otherDatabase) {
-                    CheckThreadSafety = CheckThreadSafety
-                };
-                Replications[key] = repl;
-            }
-
-            return repl;
         }
 
         #endregion

@@ -18,14 +18,14 @@ namespace Couchbase.Lite.Query
     internal sealed class LiveQuery : ILiveQuery
     {
         private readonly IQuery _underlying;
-        private readonly IDatabase _database;
+        private readonly Database _database;
         private bool _started;
         
         public event EventHandler<LiveQueryChangedEventArgs> Changed;
 
         public IEnumerable<IQueryRow> Results { get; private set; }
 
-        internal LiveQuery(IDatabase database, IQuery underlying)
+        internal LiveQuery(Database database, IQuery underlying)
         {
             _database = database;
             _underlying = underlying;

@@ -16,7 +16,7 @@ namespace Test
 #endif
     public sealed class SubdocumentTest : TestCase
     {
-        private IDocument _doc;
+        private Document _doc;
 
 #if !WINDOWS_UWP
         public SubdocumentTest(ITestOutputHelper helper)
@@ -34,10 +34,10 @@ namespace Test
             _doc.GetSubdocument("address").Should().BeNull("because no subdocument is set yet");
             _doc["address"].Should().BeNull("because not properties are set on the document yet");
 
-            var address = SubdocumentFactory.Create();
+            var address = new Subdocument();
             address.Exists.Should().BeFalse("beacuse the subdocument has not been saved yet");
             address.Document.Should().BeNull("beacuse the subdocument has not been saved yet");
-            address.ToConcrete().Parent.Should().BeNull("beacuse the subdocument has not been saved yet");
+            address.Parent.Should().BeNull("beacuse the subdocument has not been saved yet");
             address.Properties.Should().BeNull("beacuse no properties have been inserted yet");
 
             address["street"] = "1 Space Ave.";
@@ -51,15 +51,13 @@ namespace Test
             _doc.GetSubdocument("address").Should().Be(address, "because that is what was just inserted");
             _doc["address"].Should().Be(address, "because that is what was just inserted");
             address.Document.Should().Be(_doc, "beacuse the subdocument now belongs to the document");
-            address.ToConcrete()
-                .Parent.Should()
+            address.Parent.Should()
                 .Be(_doc, "beacuse the direct parent of the subdocument is the document");
 
             _doc.Save();
             address.Exists.Should().BeTrue("because the subdocument has been saved");
             address.Document.Should().Be(_doc, "beacuse the subdocument now belongs to the document");
-            address.ToConcrete()
-                .Parent.Should()
+            address.Parent.Should()
                 .Be(_doc, "beacuse the direct parent of the subdocument is the document");
             address["street"].Should().Be("1 Space Ave.", "because that is what was saved");
             address.Properties.Should()
@@ -76,8 +74,7 @@ namespace Test
             address = _doc.GetSubdocument("address");
             address.Exists.Should().BeTrue("because the subdocument has been saved");
             address.Document.Should().Be(_doc, "beacuse the subdocument now belongs to the document");
-            address.ToConcrete()
-                .Parent.Should()
+            address.Parent.Should()
                 .Be(_doc, "beacuse the direct parent of the subdocument is the document");
             address["street"].Should().Be("1 Space Ave.", "because that is what was saved");
             address.Properties.Should()
@@ -106,7 +103,7 @@ namespace Test
             address.Should().NotBeNull("because it was implicitly stored");
             _doc.GetSubdocument("address").Should().BeSameAs(address, "because the same object should be returned");
             address.Document.Should().Be(_doc, "because the document this object belongs to is _doc");
-            address.ToConcrete().Parent.Should().Be(_doc, "beacuse the parent should be _doc");
+            address.Parent.Should().Be(_doc, "beacuse the parent should be _doc");
             address.Properties.ShouldBeEquivalentTo(new Dictionary<string, object> {
                 ["street"] = "1 Space Ave."
             }, "because the properties were implicitly set");
@@ -116,7 +113,7 @@ namespace Test
             address.Should().NotBeNull("because it was saved");
             _doc.GetSubdocument("address").Should().BeSameAs(address, "because the same object should be returned");
             address.Document.Should().Be(_doc, "because the document this object belongs to is _doc");
-            address.ToConcrete().Parent.Should().Be(_doc, "beacuse the parent should be _doc");
+            address.Parent.Should().Be(_doc, "beacuse the parent should be _doc");
             address.Properties.ShouldBeEquivalentTo(new Dictionary<string, object> {
                 ["street"] = "1 Space Ave."
             }, "because the properties were implicitly set");
@@ -128,7 +125,7 @@ namespace Test
             address.Should().NotBeNull("because it was saved");
             _doc.GetSubdocument("address").Should().BeSameAs(address, "because the same object should be returned");
             address.Document.Should().Be(_doc, "because the document this object belongs to is _doc");
-            address.ToConcrete().Parent.Should().Be(_doc, "beacuse the parent should be _doc");
+            address.Parent.Should().Be(_doc, "beacuse the parent should be _doc");
             address.Properties.ShouldBeEquivalentTo(new Dictionary<string, object> {
                 ["street"] = "1 Space Ave."
             }, "because the properties were implicitly set");
@@ -138,13 +135,13 @@ namespace Test
         [Fact]
         public void TestNestedSubdocuments()
         {
-            _doc["level1"] = SubdocumentFactory.Create();
+            _doc["level1"] = new Subdocument();
             _doc.GetSubdocument("level1")["name"] = "n1";
 
-            _doc.GetSubdocument("level1")["level2"] = SubdocumentFactory.Create();
+            _doc.GetSubdocument("level1")["level2"] = new Subdocument();
             _doc.GetSubdocument("level1").GetSubdocument("level2")["name"] = "n2";
 
-            _doc.GetSubdocument("level1").GetSubdocument("level2")["level3"] = SubdocumentFactory.Create();
+            _doc.GetSubdocument("level1").GetSubdocument("level2")["level3"] = new Subdocument();
             _doc.GetSubdocument("level1").GetSubdocument("level2").GetSubdocument("level3")["name"] = "n3";
 
             var level1 = _doc.GetSubdocument("level1");
@@ -183,7 +180,7 @@ namespace Test
 
             ReopenDB();
 
-            address = _doc["address"] as ISubdocument;
+            address = _doc["address"] as Subdocument;
             _doc["address"].Should().BeSameAs(address, "because the same object should be returned");
             address.Properties.ShouldBeEquivalentTo(new Dictionary<string, object> {
                 ["street"] = "1 Space Ave."
@@ -213,27 +210,26 @@ namespace Test
 
             var address = _doc.GetSubdocument("address");
             address.Document.Should().Be(_doc, "because the subdocument is inside of _doc");
-            address.ToConcrete().Parent.Should().Be(_doc, "because the subdocument belongs to _doc");
+            address.Parent.Should().Be(_doc, "because the subdocument belongs to _doc");
             address["street"].Should().Be("1 Star Way.", "because that is the address street that is stored");
 
             var phones = address.GetSubdocument("phones");
             phones.Document.Should().Be(_doc, "because the subdocument is inside of _doc");
-            phones.ToConcrete()
-                .Parent.Should()
+            phones.Parent.Should()
                 .Be(address, "because the subdocument is directly inside of address");
             phones["mobile"].Should().Be("650-123-4567", "because that is the mobile number that is stored");
 
             var references = _doc.GetArray("references");
             references.Should().HaveCount(2, "because two elements were added");
 
-            var r1 = references[0] as ISubdocument;
+            var r1 = references[0] as Subdocument;
             r1.Document.Should().Be(_doc, "because the subdocument is inside of _doc");
-            r1.ToConcrete().Parent.Should().Be(_doc, "because the subdocument belongs to _doc");
+            r1.Parent.Should().Be(_doc, "because the subdocument belongs to _doc");
             r1["name"].Should().Be("Scott", "because that is the name that was stored");
 
-            var r2 = references[1] as ISubdocument;
+            var r2 = references[1] as Subdocument;
             r2.Document.Should().Be(_doc, "because the subdocument is inside of _doc");
-            r2.ToConcrete().Parent.Should().Be(_doc, "because the subdocument belongs to _doc");
+            r2.Parent.Should().Be(_doc, "because the subdocument belongs to _doc");
             r2["name"].Should().Be("Sam", "because that is the name that was stored");
         }
 
@@ -252,24 +248,25 @@ namespace Test
 
             var address = _doc.GetSubdocument("address");
             address.Document.Should().Be(_doc, "because the subdocument is inside of _doc");
-            address.ToConcrete().Parent.Should().Be(_doc, "because the subdocument belongs to _doc");
+            address.Parent.Should().Be(_doc, "because the subdocument belongs to _doc");
 
             var phones = address.GetSubdocument("phones");
             phones.Document.Should().Be(_doc, "because the subdocument is inside of _doc");
-            phones.ToConcrete()
-                .Parent.Should()
+            phones.Parent.Should()
                 .Be(address, "because the subdocument is directly inside of address");
 
-            var address2 = SubdocumentFactory.Create(address);
+            var address2 = new Subdocument {
+                Properties = address.Properties
+            };
             address2.Should().NotBeSameAs(address, "because the factory should create a copy");
             address2.Document.Should().BeNull("beacuse it is not added to a document yet");
-            address2.ToConcrete().Parent.Should().BeNull("beacuse it is not added to a document yet");
+            address2.Parent.Should().BeNull("beacuse it is not added to a document yet");
             address2["street"].Should().Be(address["street"], "because the copy's contents should be the same");
 
             var phones2 = address2.GetSubdocument("phones");
             phones2.Should().NotBeSameAs(phones, "because the factory should create a copy");
             phones2.Document.Should().BeNull("because it is not added to a document yet");
-            phones2.ToConcrete().Parent.Should().Be(address2, "beacuse phones2 is nested in address2");
+            phones2.Parent.Should().Be(address2, "beacuse phones2 is nested in address2");
             phones2["mobile"].Should().Be(phones["mobile"], "because the copy's contents should be the same");
         }
 
@@ -288,11 +285,11 @@ namespace Test
 
             var address = _doc.GetSubdocument("address");
             address.Document.Should().Be(_doc, "because the subdocument is inside of _doc");
-            address.ToConcrete().Parent.Should().Be(_doc, "because the subdocument belongs to _doc");
+            address.Parent.Should().Be(_doc, "because the subdocument belongs to _doc");
 
             var phones = address.GetSubdocument("phones");
             phones.Document.Should().Be(_doc, "because the subdocument is inside of _doc");
-            phones.ToConcrete()
+            phones
                 .Parent.Should()
                 .Be(address, "because the subdocument is directly inside of address");
 
@@ -300,14 +297,14 @@ namespace Test
             var address2 = _doc.GetSubdocument("address2");
             address2.Should().NotBeSameAs(address, "because a copy should be made");
             address2.Document.Should().Be(_doc, "because the subdocument is inside of _doc");
-            address2.ToConcrete().Parent.Should().Be(_doc, "because the subdocument belongs to _doc");
+            address2.Parent.Should().Be(_doc, "because the subdocument belongs to _doc");
             address2["street"]
                 .Should()
                 .Be(address["street"], "beacuse the two subdocuments should have the same values");
 
             var phones2 = address2.GetSubdocument("phones");
             phones2.Document.Should().Be(_doc, "because the subdocument is inside of _doc");
-            phones2.ToConcrete().Parent.Should().Be(address2, "because the subdocument is inside address2");
+            phones2.Parent.Should().Be(address2, "because the subdocument is inside address2");
             phones2["mobile"]
                 .Should()
                 .Be(phones2["mobile"], "beacuse the two subdocuments should have the same values");
@@ -338,10 +335,10 @@ namespace Test
             var subdocs = _doc.GetArray("subdocs");
             subdocs.Should().HaveCount(4, "because there are four subdocuments in the array");
 
-            var s1 = subdocs[0] as ISubdocument;
-            var s2 = subdocs[1] as ISubdocument;
-            var s3 = subdocs[2] as ISubdocument;
-            var s4 = subdocs[3] as ISubdocument;
+            var s1 = subdocs[0] as Subdocument;
+            var s2 = subdocs[1] as Subdocument;
+            var s3 = subdocs[2] as Subdocument;
+            var s4 = subdocs[3] as Subdocument;
 
             s1["name"].Should().Be("1", "because that is the name that was inserted");
             s2["name"].Should().Be("2", "because that is the name that was inserted");
@@ -350,7 +347,7 @@ namespace Test
 
             // Make changes:
 
-            var s5 = SubdocumentFactory.Create();
+            var s5 = new Subdocument();
             s5["name"] = "5";
 
             var nuSubdocs1 = new List<object> {
@@ -409,8 +406,8 @@ namespace Test
 
             var references = _doc.GetArray("references");
             references.Should().HaveCount(2, "because there are two elements inside");
-            var r1 = references[0] as ISubdocument;
-            var r2 = references[1] as ISubdocument;
+            var r1 = references[0] as Subdocument;
+            var r2 = references[1] as Subdocument;
             r1.Should().NotBeNull("because the elements should remain inside");
             r2.Should().NotBeNull("because the elements should remain inside");
 
@@ -419,25 +416,25 @@ namespace Test
 
             // Check address:
             address.Document.Should().BeNull("because the subdocument is now invalid");
-            address.ToConcrete().Parent.Should().BeNull("because the subdocument is now invalid");
+            address.Parent.Should().BeNull("because the subdocument is now invalid");
             address.Properties.Should().BeNull("because the subdocument is now invalid");
             address["street"].Should().BeNull("because the subdocument is now invalid");
             address["phones"].Should().BeNull("because the subdocument is now invalid");
 
             // Check phones:
             phones.Document.Should().BeNull("because the subdocument is now invalid");
-            phones.ToConcrete().Parent.Should().BeNull("because the subdocument is now invalid");
+            phones.Parent.Should().BeNull("because the subdocument is now invalid");
             phones.Properties.Should().BeNull("because the subdocument is now invalid");
             phones["mobile"].Should().BeNull("because the subdocument is now invalid");
 
             // Check references:
             r1.Document.Should().BeNull("because the subdocument is now invalid");
-            r1.ToConcrete().Parent.Should().BeNull("because the subdocument is now invalid");
+            r1.Parent.Should().BeNull("because the subdocument is now invalid");
             r1.Properties.Should().BeNull("because the subdocument is now invalid");
             r1["name"].Should().BeNull("because the subdocument is now invalid");
 
             r2.Document.Should().BeNull("because the subdocument is now invalid");
-            r2.ToConcrete().Parent.Should().BeNull("because the subdocument is now invalid");
+            r2.Parent.Should().BeNull("because the subdocument is now invalid");
             r2.Properties.Should().BeNull("because the subdocument is now invalid");
             r2["name"].Should().BeNull("because the subdocument is now invalid");
         }
@@ -471,8 +468,8 @@ namespace Test
 
             var references = _doc.GetArray("references");
             references.Should().HaveCount(2, "because there are two elements inside");
-            var r1 = references[0] as ISubdocument;
-            var r2 = references[1] as ISubdocument;
+            var r1 = references[0] as Subdocument;
+            var r2 = references[1] as Subdocument;
             r1.Should().NotBeNull("because the elements should remain inside");
             r2.Should().NotBeNull("because the elements should remain inside");
 
@@ -480,25 +477,25 @@ namespace Test
 
             // Check address:
             address.Document.Should().BeNull("because the subdocument is now invalid");
-            address.ToConcrete().Parent.Should().BeNull("because the subdocument is now invalid");
+            address.Parent.Should().BeNull("because the subdocument is now invalid");
             address.Properties.Should().BeNull("because the subdocument is now invalid");
             address["street"].Should().BeNull("because the subdocument is now invalid");
             address["phones"].Should().BeNull("because the subdocument is now invalid");
 
             // Check phones:
             phones.Document.Should().BeNull("because the subdocument is now invalid");
-            phones.ToConcrete().Parent.Should().BeNull("because the subdocument is now invalid");
+            phones.Parent.Should().BeNull("because the subdocument is now invalid");
             phones.Properties.Should().BeNull("because the subdocument is now invalid");
             phones["mobile"].Should().BeNull("because the subdocument is now invalid");
 
             // Check references:
             r1.Document.Should().BeNull("because the subdocument is now invalid");
-            r1.ToConcrete().Parent.Should().BeNull("because the subdocument is now invalid");
+            r1.Parent.Should().BeNull("because the subdocument is now invalid");
             r1.Properties.Should().BeNull("because the subdocument is now invalid");
             r1["name"].Should().BeNull("because the subdocument is now invalid");
 
             r2.Document.Should().BeNull("because the subdocument is now invalid");
-            r2.ToConcrete().Parent.Should().BeNull("because the subdocument is now invalid");
+            r2.Parent.Should().BeNull("because the subdocument is now invalid");
             r2.Properties.Should().BeNull("because the subdocument is now invalid");
             r2["name"].Should().BeNull("because the subdocument is now invalid");
         }
@@ -506,8 +503,10 @@ namespace Test
         [Fact]
         public void TestReplaceWithNonDict()
         {
-            var address = SubdocumentFactory.Create();
-            address["street"] = "1 Star Way.";
+            var address = new Subdocument {
+                ["street"] = "1 Star Way."
+            };
+
             address["street"].Should().Be("1 Star Way.", "because this is the value that was just inserted");
             address.Properties.ShouldBeEquivalentTo(new Dictionary<string, object> {
                 ["street"] = "1 Star Way."
@@ -525,8 +524,10 @@ namespace Test
         [Fact]
         public void TestReplaceWithNewSubdocument()
         {
-            var address = SubdocumentFactory.Create();
-            address["street"] = "1 Star Way.";
+            var address = new Subdocument {
+                ["street"] = "1 Star Way."
+            };
+
             address["street"].Should().Be("1 Star Way.", "because this is the value that was just inserted");
             address.Properties.ShouldBeEquivalentTo(new Dictionary<string, object> {
                 ["street"] = "1 Star Way."
@@ -536,8 +537,9 @@ namespace Test
             _doc["address"].Should().Be(address, "because this is the value that was just inserted");
             address.Document.Should().Be(_doc, "because _doc now owns address");
 
-            var nuAddress = SubdocumentFactory.Create();
-            nuAddress["street"] = "123 Space Dr.";
+            var nuAddress = new Subdocument {
+                ["street"] = "123 Space Dr."
+            };
             _doc["address"] = nuAddress;
 
             _doc["address"].Should().Be(nuAddress, "beacuse the address was replaced");
@@ -592,13 +594,14 @@ namespace Test
 
             var references = _doc.GetArray("references");
             references.Should().HaveCount(2, "because there are two elements inside");
-            var r1 = references[0] as ISubdocument;
-            var r2 = references[1] as ISubdocument;
+            var r1 = references[0] as Subdocument;
+            var r2 = references[1] as Subdocument;
             r1.Should().NotBeNull("because the elements should remain inside");
             r2.Should().NotBeNull("because the elements should remain inside");
 
-            var nuSubscription = SubdocumentFactory.Create();
-            nuSubscription["type"] = "platinum";
+            var nuSubscription = new Subdocument {
+                ["type"] = "platinum"
+            };
 
             var date = DateTimeOffset.Now;
             _doc.Properties = new Dictionary<string, object> {
@@ -619,11 +622,11 @@ namespace Test
 
             _doc["address"].Should().Be("1 Star Way.", "because address was replaced");
             address.Document.Should().BeNull("because _doc no longer owns address");
-            address.ToConcrete().Parent.Should().BeNull("because address is no longer inside any object");
+            address.Parent.Should().BeNull("because address is no longer inside any object");
             address.Properties.Should().BeNull("because address was invalidated");
 
             phones.Document.Should().BeNull("because _doc no longer owns phones");
-            phones.ToConcrete().Parent.Should().BeNull("because phones is no longer inside any object");
+            phones.Parent.Should().BeNull("because phones is no longer inside any object");
             phones.Properties.Should().BeNull("because phones was invalidated");
 
             _doc["work"].Should().Be(work, "because the existing work subdocument should be updated");
@@ -633,25 +636,25 @@ namespace Test
             _doc["subscription"].Should().Be(nuSubscription, "because the new subscription should be inside _doc");
             nuSubscription["type"].Should().Be("platinum", "because that is the type of the new subscription");
             subscription.Document.Should().BeNull("because _doc no longer owns subscription");
-            subscription.ToConcrete().Parent.Should().BeNull("because subscription is no longer inside any object");
+            subscription.Parent.Should().BeNull("because subscription is no longer inside any object");
             subscription.Properties.Should().BeNull("because subscription was invalidated");
 
             _doc.GetDate("expiration").Should().Be(date, "because that is the value that was stored");
             expiration.Document.Should().BeNull("because _doc no longer owns expiration");
-            expiration.ToConcrete().Parent.Should().BeNull("because expiration is no longer inside any object");
+            expiration.Parent.Should().BeNull("because expiration is no longer inside any object");
             expiration.Properties.Should().BeNull("because expiration was invalidated");
 
             references = _doc.GetArray("references");
             references.Should().HaveCount(1, "because the new collection has only one item");
             references[0]
-                .As<ISubdocument>()
+                .As<Subdocument>()
                 .Should()
                 .Be(r1, "because r1 should be updated as the new first object in the array");
             r1.Document.Should().Be(_doc, "because _doc owns r1");
-            r1.ToConcrete().Parent.Should().Be(_doc, "because r1 is directly inside of _doc");
+            r1.Parent.Should().Be(_doc, "because r1 is directly inside of _doc");
             r1["name"].Should().Be("Smith", "because that is the new value in the subdocument");
             r2.Document.Should().BeNull("because _doc no longer owns r2");
-            r2.ToConcrete().Parent.Should().BeNull("because r2 is no longer inside any object");
+            r2.Parent.Should().BeNull("because r2 is no longer inside any object");
             r2.Properties.Should().BeNull("because r2 was invalidated");
         }
 
@@ -685,8 +688,8 @@ namespace Test
 
             var references = _doc.GetArray("references");
             references.Should().HaveCount(2, "because there are two elements inside");
-            var r1 = references[0] as ISubdocument;
-            var r2 = references[1] as ISubdocument;
+            var r1 = references[0] as Subdocument;
+            var r2 = references[1] as Subdocument;
             r1.Should().NotBeNull("because the elements should remain inside");
             r2.Should().NotBeNull("because the elements should remain inside");
 
@@ -701,7 +704,7 @@ namespace Test
 
             // Check address:
             address.Document.Should().BeNull("because _doc was deleted");
-            address.ToConcrete().Parent.Should().BeNull("because _doc was deleted");
+            address.Parent.Should().BeNull("because _doc was deleted");
             address.Exists.Should().BeFalse("because _doc was deleted");
             address.Properties.Should().BeNull("because _doc was deleted");
             address["street"].Should().BeNull("because _doc was deleted");
@@ -709,20 +712,20 @@ namespace Test
 
             // Check phones:
             phones.Document.Should().BeNull("because _doc was deleted");
-            phones.ToConcrete().Parent.Should().BeNull("because _doc was deleted");
+            phones.Parent.Should().BeNull("because _doc was deleted");
             phones.Exists.Should().BeFalse("because _doc was deleted");
             phones.Properties.Should().BeNull("because _doc was deleted");
             phones["mobile"].Should().BeNull("because _doc was deleted");
 
             // Check references:
             r1.Document.Should().BeNull("because _doc was deleted");
-            r1.ToConcrete().Parent.Should().BeNull("because _doc was deleted");
+            r1.Parent.Should().BeNull("because _doc was deleted");
             r1.Exists.Should().BeFalse("because _doc was deleted");
             r1.Properties.Should().BeNull("because _doc was deleted");
             r1["name"].Should().BeNull("because _doc was deleted");
 
             r2.Document.Should().BeNull("because _doc was deleted");
-            r2.ToConcrete().Parent.Should().BeNull("because _doc was deleted");
+            r2.Parent.Should().BeNull("because _doc was deleted");
             r2.Exists.Should().BeFalse("because _doc was deleted");
             r2.Properties.Should().BeNull("because _doc was deleted");
             r2["name"].Should().BeNull("because _doc was deleted");

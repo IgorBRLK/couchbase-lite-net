@@ -39,7 +39,7 @@ namespace Couchbase.Lite.Query
         /// </summary>
         /// <param name="database">The database to operate on</param>
         /// <returns>The source of data for the <see cref="IQuery" /></returns>
-        public static IDatabaseSource Database(IDatabase database)
+        public static IDatabaseSource Database(Database database)
         {
             var db = default(Database);
             if (database != null) {
@@ -56,7 +56,7 @@ namespace Couchbase.Lite.Query
 
         #region Internal Methods
 
-        internal static IQueryable<TElement> LinqDataSource<TElement>(IDatabase database, bool prefetch)
+        internal static IQueryable<TElement> LinqDataSource<TElement>(Database database, bool prefetch)
             where TElement : class, IDocumentModel, new()
         {
             if (database == null) {

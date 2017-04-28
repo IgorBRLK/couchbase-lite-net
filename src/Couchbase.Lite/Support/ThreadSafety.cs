@@ -19,49 +19,45 @@
 // limitations under the License.
 // 
 using System;
+using System.Threading;
 
 namespace Couchbase.Lite.Support
 {
-    internal abstract class ThreadSafe : IThreadSafe
+    internal sealed class ThreadSafety : IDisposable
     {
-        #region Variables
+        private readonly Mutex _lock = new Mutex();
 
-        private readonly int _owningThread;
-
-        #endregion
-
-        #region Properties
-
-        public bool IsSafeToUse
+        public void DoLocked(Action a)
         {
-            get => _owningThread == Environment.CurrentManagedThreadId;
-        }
+            if (_lock == null) {
+                throw new ObjectDisposedException("ThreadSafety");
+            }
 
-        internal bool CheckThreadSafety
-        {
-            get; set;
-        }
-
-        #endregion
-
-        #region Constructors
-
-        internal ThreadSafe()
-        {
-            _owningThread = Environment.CurrentManagedThreadId;
-        }
-
-        #endregion
-
-        #region Protected Methods
-
-        protected void AssertSafety()
-        {
-            if (CheckThreadSafety && !IsSafeToUse) {
-                throw new ThreadSafetyViolationException();
+            _lock.WaitOne();
+            try {
+                a();
+            } finally {
+                _lock.ReleaseMutex();
             }
         }
 
-        #endregion
+        public T DoLocked<T>(Func<T> f)
+        {
+            if (_lock == null) {
+                throw new ObjectDisposedException("ThreadSafety");
+            }
+
+            _lock.WaitOne();
+            try {
+                return f();
+            } finally {
+                _lock.ReleaseMutex();
+            }
+        }
+
+        public void Dispose()
+        {
+            _lock.Dispose();
+        }
     }
 }

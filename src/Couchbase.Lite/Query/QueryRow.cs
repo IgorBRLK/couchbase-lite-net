@@ -35,7 +35,7 @@ namespace Couchbase.Lite.Querying
 
         #region Properties
 
-        public IDocument Document
+        public Document Document
         {
             get {
                 var retVal = _db.GetDocument(DocumentID);

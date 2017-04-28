@@ -63,7 +63,7 @@ namespace Test
         [JsonProperty(PropertyName = "memberSince")]
         public string MemberSince { get; set; }
 
-        public IDocument Document { get; set; }
+        public Document Document { get; set; }
 
         public NamesModel()
         {
@@ -150,7 +150,7 @@ namespace Test
         [Fact]
         public void TestWhereCheckNull()
         {
-            IDocument doc1 = null, doc2 = null;
+            Document doc1 = null, doc2 = null;
             doc1 = Db["doc1"];
             doc1["name"] = "Scott";
             doc1["address"] = null;
@@ -169,13 +169,13 @@ namespace Test
 
             var tests = new[] {
                 Tuple.Create(name.NotNull(), new[] { doc1, doc2 }),
-                Tuple.Create(name.IsNull(), new IDocument[0]),
+                Tuple.Create(name.IsNull(), new Document[0]),
                 Tuple.Create(address.NotNull(), new[] { doc2 }),
                 Tuple.Create(address.IsNull(), new[] { doc1 }),
                 Tuple.Create(age.NotNull(), new[] { doc1, doc2 }), // null != missing
-                Tuple.Create(age.IsNull(), new IDocument[0]),
+                Tuple.Create(age.IsNull(), new Document[0]),
                 Tuple.Create(work.NotNull(), new[] { doc1, doc2 }),
-                Tuple.Create(work.IsNull(), new IDocument[0])
+                Tuple.Create(work.IsNull(), new Document[0])
             };
 
             int testNum = 1;
@@ -302,7 +302,7 @@ namespace Test
         [Fact]
         public void TestWhereIs()
         {
-            var doc1 = default(IDocument);
+            var doc1 = default(Document);
             doc1 = Db.CreateDocument();
             doc1["string"] = "string";
             doc1.Save();
@@ -489,7 +489,7 @@ namespace Test
         public void TestSelectDistinct()
         {
             // TODO: Needs LiteCore fix
-            IDocument doc1 = null, doc2 = null;
+            Document doc1 = null, doc2 = null;
             doc1 = Db.CreateDocument();
             doc1["number"] = 1;
             doc1.Save();
@@ -623,9 +623,7 @@ namespace Test
                     doc.Save();
                     numbers.Add(doc.Properties);
                 }
-
-                return true;
-            }).Should().BeTrue("because otherwise the batch operation failed");
+            });
         }
 
         private int VerifyQuery(IQuery query, Action<int, IQueryRow> block)

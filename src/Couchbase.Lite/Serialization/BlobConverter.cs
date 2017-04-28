@@ -82,7 +82,6 @@ namespace Couchbase.Lite.Serialization
             var blob = value as Blob;
             if(blob != null) {
                 blob.Install(_db);
-                blob.CheckThreadSafety = _db.CheckThreadSafety;
                 serializer.Serialize(writer, blob.JsonRepresentation);
             }
         }
@@ -147,9 +146,7 @@ namespace Couchbase.Lite.Serialization
 
             var type = props["_cbltype"] as string;
             if(type == "blob") {
-                return new Blob(_db, props) {
-                    CheckThreadSafety = _db.CheckThreadSafety
-                };
+                return new Blob(_db, props);
             }
 
             throw new InvalidOperationException($"Unrecognized _cbltype in document ({type})");

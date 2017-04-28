@@ -59,14 +59,12 @@ namespace Test
 
             Db.InBatch(() =>
             {
-                for(uint i = 0; i < 10; i++) {
+                for (uint i = 0; i < 10; i++) {
                     var doc = Db[$"doc-{i}"];
                     doc["type"] = "demo";
                     doc.Save();
                 }
-
-                return true;
-            }).Should().BeTrue("because otherwise the batch failed");
+            });
 
             mre.Wait(5000).Should().BeTrue("because otherwise the event never fired");
             gotCount.Should().Be(10, "because 10 documents were added");
@@ -111,7 +109,7 @@ namespace Test
         //[Fact]
         public void TestExternalChanges()
         {
-            using(var db2 = DatabaseFactory.Create(Db)) {
+            using(var db2 = new Database(Db.Name, Db.Options)) {
                 var gotCount = 0;
                 var dbExternal = false;
                 var mre1 = new ManualResetEventSlim();
@@ -135,14 +133,12 @@ namespace Test
 
                 Db.InBatch(() =>
                 {
-                    for(uint i = 0; i < 10; i++) {
+                    for (uint i = 0; i < 10; i++) {
                         var doc = Db[$"doc-{i}"];
                         doc["type"] = "demo";
                         doc.Save();
                     }
-
-                    return true;
-                }).Should().BeTrue("because otherwise the batch failed");
+                });
 
                 mre1.Wait(TimeSpan.FromSeconds(5)).Should().BeTrue("because otherwise the database event didn't fire");
                 mre2.Wait(TimeSpan.FromSeconds(5)).Should().BeTrue("because otherwise the document event didn't fire");

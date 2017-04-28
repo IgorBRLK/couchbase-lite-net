@@ -44,7 +44,7 @@ namespace Test
 #endif
     public class DocumentTest : TestCase
     {
-        private IDocument _doc;
+        private Document _doc;
 
 #if !WINDOWS_UWP
         public DocumentTest(ITestOutputHelper output) : base(output)
@@ -131,7 +131,7 @@ namespace Test
             doc.GetDate("date").Should().Be(date, "because that is the date that was saved");
 
             // Get the doc from another database
-            using(var otherDB = DatabaseFactory.Create(Db)) {
+            using(var otherDB = new Database(Db.Name, Db.Options)) {
                 var doc1 = otherDB.GetDocument("doc1");
                 doc1.GetBoolean("bool").Should().BeTrue("because that is the bool that was saved");
                 doc1.GetDouble("double").Should().BeApproximately(1.1, Double.Epsilon, "because that is the double that was saved");
@@ -353,7 +353,7 @@ namespace Test
             Db.ConflictResolver = new GiveUp();
             var doc = SetupConflict();
             var ex = doc.Invoking(d => d.Save()).ShouldThrow<LiteCoreException>().Which.Error.Should().Be(new C4Error(LiteCoreError.Conflict), "because the conflict resolver gave up");
-            doc.ToConcrete().HasChanges.Should().BeTrue("because the document wasn't saved");
+            doc.HasChanges.Should().BeTrue("because the document wasn't saved");
         }
 
         [Fact]
@@ -395,15 +395,15 @@ namespace Test
         public void TestBlob()
         {
             var content = Encoding.UTF8.GetBytes("12345");
-            var data = BlobFactory.Create("text/plain", content);
+            var data = new Blob("text/plain", content);
             _doc["data"] = data;
             _doc["name"] = "Jim";
             _doc.Save();
 
-            using(var otherDb = DatabaseFactory.Create(Db)) {
+            using(var otherDb = new Database(Db.Name, Db.Options)) {
                 var doc1 = otherDb["doc1"];
                 doc1["name"].Should().Be("Jim", "because the document should be persistent after save");
-                doc1["data"].Should().BeAssignableTo<IBlob>("because otherwise the data did not save correctly");
+                doc1["data"].Should().BeAssignableTo<Blob>("because otherwise the data did not save correctly");
                 data = doc1.GetBlob("data");
 
                 data.Length.Should().Be(5, "because the data is 5 bytes long");
@@ -420,13 +420,13 @@ namespace Test
         public void TestEmptyBlob()
         {
             var content = new byte[0];
-            var data = BlobFactory.Create("text/plain", content);
+            var data = new Blob("text/plain", content);
             _doc["data"] = data;
             _doc.Save();
 
-            using(var otherDb = DatabaseFactory.Create(Db)) {
+            using(var otherDb = new Database(Db.Name, Db.Options)) {
                 var doc1 = otherDb["doc1"];
-                doc1["data"].Should().BeAssignableTo<IBlob>("because otherwise the data did not save correctly");
+                doc1["data"].Should().BeAssignableTo<Blob>("because otherwise the data did not save correctly");
                 data = doc1.GetBlob("data");
 
                 data.Length.Should().Be(0, "because the data is 5 bytes long");
@@ -444,13 +444,13 @@ namespace Test
         {
             var content = new byte[0];
             Stream contentStream = new MemoryStream(content);
-            var data = BlobFactory.Create("text/plain", contentStream);
+            var data = new Blob("text/plain", contentStream);
             _doc["data"] = data;
             _doc.Save();
 
-            using(var otherDb = DatabaseFactory.Create(Db)) {
+            using(var otherDb = new Database(Db.Name, Db.Options)) {
                 var doc1 = otherDb["doc1"];
-                doc1["data"].Should().BeAssignableTo<IBlob>("because otherwise the data did not save correctly");
+                doc1["data"].Should().BeAssignableTo<Blob>("because otherwise the data did not save correctly");
                 data = doc1.GetBlob("data");
 
                 data.Length.Should().Be(0, "because the data is 5 bytes long");
@@ -467,7 +467,7 @@ namespace Test
         public void TestMultipleBlobRead()
         {
             var content = Encoding.UTF8.GetBytes("12345");
-            var data = BlobFactory.Create("text/plain", content);
+            var data = new Blob("text/plain", content);
             _doc["data"] = data;
             data = _doc.GetBlob("data");
             for (int i = 0; i < 5; i++) {
@@ -481,9 +481,9 @@ namespace Test
 
             _doc.Save();
             
-            using(var otherDb = DatabaseFactory.Create(Db)) {
+            using(var otherDb = new Database(Db.Name, Db.Options)) {
                 var doc1 = otherDb["doc1"];
-                doc1["data"].Should().BeAssignableTo<IBlob>("because otherwise the data did not save correctly");
+                doc1["data"].Should().BeAssignableTo<Blob>("because otherwise the data did not save correctly");
                 data = doc1.GetBlob("data");
 
                 data.Length.Should().Be(5, "because the data is 5 bytes long");
@@ -500,7 +500,7 @@ namespace Test
         public void TestReadExistingBlob()
         {
             var content = Encoding.UTF8.GetBytes("12345");
-            var data = BlobFactory.Create("text/plain", content);
+            var data = new Blob("text/plain", content);
             _doc["data"] = data;
             _doc["name"] = "Jim";
             _doc.Save();
@@ -508,17 +508,17 @@ namespace Test
             ReopenDB();
 
             _doc = Db["doc1"];
-            _doc["data"].As<IBlob>().Content.Should().Equal(content, "because the data should have been retrieved correctly");
+            _doc["data"].As<Blob>().Content.Should().Equal(content, "because the data should have been retrieved correctly");
 
             ReopenDB();
 
             _doc = Db["doc1"];
             _doc["foo"] = "bar";
             _doc.Save();
-            _doc["data"].As<IBlob>().Content.Should().Equal(content, "because the data should have been retrieved correctly");
+            _doc["data"].As<Blob>().Content.Should().Equal(content, "because the data should have been retrieved correctly");
         }
 
-        private IDocument SetupConflict()
+        private Document SetupConflict()
         {
             var doc =  Db["doc1"];
             doc["type"] = "profile";
@@ -533,12 +533,12 @@ namespace Test
             return doc;
         }
 
-        private unsafe bool SaveProperties(IDictionary<string, object> props, string docID)
+        private unsafe void SaveProperties(IDictionary<string, object> props, string docID)
         {
-            var ok = Db.InBatch(() =>
+            Db.InBatch(() =>
             {
                 var tricky =
-                    (C4Document*) LiteCoreBridge.Check(err => Native.c4doc_get(Db.ToConcrete().c4db, docID, true, err));
+                    (C4Document*) LiteCoreBridge.Check(err => Native.c4doc_get(Db.c4db, docID, true, err));
                 var put = new C4DocPutRequest {
                     docID = tricky->docID,
                     history = &tricky->revID,
@@ -546,22 +546,17 @@ namespace Test
                     save = true
                 };
 
-                var body = Db.ToConcrete().JsonSerializer.Serialize(props);
+                var body = Db.JsonSerializer.Serialize(props);
                 put.body = body;
 
                 var newDoc = (C4Document*) LiteCoreBridge.Check(err =>
                 {
                     var localPut = put;
-                    var retVal = Native.c4doc_put(Db.ToConcrete().c4db, &localPut, null, err);
+                    var retVal = Native.c4doc_put(Db.c4db, &localPut, null, err);
                     Native.FLSliceResult_Free(body);
                     return retVal;
                 });
-
-                return true;
             });
-
-            ok.Should().BeTrue("beacuse otherwise the batch failed in SaveProperties");
-            return ok;
         }
 
         protected override void Dispose(bool disposing)

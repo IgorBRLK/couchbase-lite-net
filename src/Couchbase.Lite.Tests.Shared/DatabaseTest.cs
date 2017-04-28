@@ -50,16 +50,16 @@ namespace Test
         public void TestCreate()
         {
             var dir = Path.Combine(Path.GetTempPath().Replace("cache", "files"), "CouchbaseLite");
-            DatabaseFactory.DeleteDatabase("db", dir);
+            Database.Delete("db", dir);
 
             var options = DatabaseOptions.Default;
             options.Directory = dir;
 
             try {
-                var db = DatabaseFactory.Create("db", options);
+                var db = new Database("db", options);
                 db.Dispose();
             } finally {
-                DatabaseFactory.DeleteDatabase("db", dir);
+                Database.Delete("db", dir);
             }
         }
 

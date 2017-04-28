@@ -19,23 +19,6 @@ using Fact = Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute;
 
 namespace Test
 {
-    internal static class Convert
-    {
-        internal static Document ToConcrete(this IDocument doc)
-        {
-            return doc as Document;
-        }
-
-        internal static Database ToConcrete(this IDatabase db)
-        {
-            return db as Database;
-        }
-
-        internal static Subdocument ToConcrete(this ISubdocument subdoc)
-        {
-            return subdoc as Subdocument;
-        }
-    }
 
 #if WINDOWS_UWP
     [TestClass]
@@ -57,7 +40,7 @@ namespace Test
         }
 #endif
 
-        protected IDatabase Db { get; private set; }
+        protected Database Db { get; private set; }
 
         private static string Directory => Path.Combine(Path.GetTempPath().Replace("cache", "files"), "CouchbaseLite");
 
@@ -92,7 +75,7 @@ namespace Test
             var options = DatabaseOptions.Default;
             options.Directory = Directory;
             options.CheckThreadSafety = true;
-            Db = DatabaseFactory.Create(DatabaseName, options);
+            Db = new Database(DatabaseName, options);
             Db.Should().NotBeNull("because otherwise the database failed to open");
         }
 
@@ -112,7 +95,7 @@ namespace Test
 
         protected void LoadJSONResource(string resourceName)
         {
-            var ok = Db.InBatch(() =>
+            Db.InBatch(() =>
             {
                 var n = 0ul;
                 ReadFileByLines($"C/tests/data/{resourceName}.json", line =>
@@ -126,11 +109,7 @@ namespace Test
 
                     return true;
                 });
-
-                return true;
             });
-
-            ok.Should().BeTrue("because otherwise the batch insert failed");
         }
 
         internal bool ReadFileByLines(string path, Func<string, bool> callback)

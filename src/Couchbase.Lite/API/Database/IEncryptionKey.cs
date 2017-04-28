@@ -1,5 +1,5 @@
 ﻿// 
-// IThreadSafe.cs
+// IEncryptionKey.cs
 // 
 // Author:
 //     Jim Borden  <jim.borden@couchbase.com>
@@ -22,18 +22,22 @@
 namespace Couchbase.Lite
 {
     /// <summary>
-    /// An interface for an object that guarantees thread safety via
-    /// the use of dispatch queues
+    /// An interface representing an encryption key for encrypting and
+    /// decrypting databases
     /// </summary>
-    public interface IThreadSafe
+    public interface IEncryptionKey
     {
         #region Properties
 
         /// <summary>
-        /// Gets whether or not this object can be used (i.e. its thread
-        /// safety conditions are met)
+        /// Gets the derived bytes of this key in hexadecimal format
         /// </summary>
-        bool IsSafeToUse { get; }
+        string HexData { get; }
+
+        /// <summary>
+        /// Gets the derived bytes of this key
+        /// </summary>
+        byte[] KeyData { get; }
 
         #endregion
     }
